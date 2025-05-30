@@ -175,3 +175,145 @@ function loadAndDisplayNewForecastRun() {
 }
 updateButton.onClick(loadAndDisplayNewForecastRun);
 loadAndDisplayNewForecastRun();
+
+// --- Configuration ---
+var START_VALIDITY_DATE_STR = '2025-04-01';
+var END_VALIDITY_DATE_STR = '2025-04-20';
+var LEAD_TIME_LONG_HOURS = 312;
+var LEAD_TIME_SHORT_HOURS = 24;
+var FORECAST_RUN_TIME_OF_DAY_UTC = 'T00:00:00Z';
+var germany = ee.FeatureCollection('WM/geoLab/geoBoundaries/600/ADM0')
+               .filter(ee.Filter.eq('shapeName', 'Germany'))
+               .first()
+               .geometry();
+
+// Helper function to get mean raw temperature for a specific creation time and forecast hour
+function getMeanRawEcmwfTemp(creationDateTimeStr, forecastHour) {
+  var creationTimeMillis = ee.Date(creationDateTimeStr).millis();
+  var forecastImageRaw = ee.ImageCollection('ECMWF/NRT_FORECAST/IFS/OPER')
+      .filter(ee.Filter.eq('creation_time', creationTimeMillis))
+      .filter(ee.Filter.eq('forecast_hours', forecastHour))
+      .select('temperature_2m_sfc')
+      .first();
+  // This If will return either an ee.Number or a GEE server-side null
+  return ee.Algorithms.If(
+      forecastImageRaw,
+      ee.Image(forecastImageRaw).reduceRegion({
+          reducer: ee.Reducer.mean(),
+          geometry: germany,
+          scale: 10000, maxPixels: 1e9, tileScale: 4
+      }).get('temperature_2m_sfc'),
+      null);
+}
+
+// --- Main Logic ---
+var startDate = ee.Date(START_VALIDITY_DATE_STR);
+var endDate = ee.Date(END_VALIDITY_DATE_STR);
+var nDays = endDate.difference(startDate, 'day').add(1);
+
+if (nDays.getInfo() <= 0) {
+  print('Error: END_VALIDITY_DATE_STR must be on or after START_VALIDITY_DATE_STR.');
+} else {
+  print('Processing ' + nDays.getInfo() + ' validity dates from ' + START_VALIDITY_DATE_STR + ' to ' + END_VALIDITY_DATE_STR);
+  var validityDateList = ee.List.sequence(0, nDays.subtract(1))
+    .map(function(dayOffset) { return startDate.advance(dayOffset, 'day'); });
+
+  // Step 1: Get the raw forecast values for long and short leads
+  var initialTimeSeriesData = validityDateList.map(function(validityDateEeDate) {
+    validityDateEeDate = ee.Date(validityDateEeDate);
+    var targetValidityDateTime = ee.Date(validityDateEeDate.format('YYYY-MM-dd').cat(FORECAST_RUN_TIME_OF_DAY_UTC));
+
+    var creationDateTimeLongLead = targetValidityDateTime.advance(-LEAD_TIME_LONG_HOURS, 'hour');
+    var creationDateTimeStrLongLead = ee.String(creationDateTimeLongLead.format('YYYY-MM-dd')).cat(FORECAST_RUN_TIME_OF_DAY_UTC);
+    var valueLongLead = getMeanRawEcmwfTemp(creationDateTimeStrLongLead, LEAD_TIME_LONG_HOURS);
+
+    var creationDateTimeShortLead = targetValidityDateTime.advance(-LEAD_TIME_SHORT_HOURS, 'hour');
+    var creationDateTimeStrShortLead = ee.String(creationDateTimeShortLead.format('YYYY-MM-dd')).cat(FORECAST_RUN_TIME_OF_DAY_UTC);
+    var valueShortLead = getMeanRawEcmwfTemp(creationDateTimeStrShortLead, LEAD_TIME_SHORT_HOURS);
+
+    return ee.Feature(null, {
+      'system:time_start': targetValidityDateTime.millis(), // ee.Number (timestamp)
+      'value_long_lead': valueLongLead,  // ee.Number or GEE null
+      'value_short_lead': valueShortLead // ee.Number or GEE null
+    });
+  });
+  initialTimeSeriesData = ee.FeatureCollection(initialTimeSeriesData);
+
+  // Step 2: Evaluate to bring data client-side, then calculate differences and stats
+  var maxFeatures = nDays.getInfo(); // Get number of days for toList limit
+  print('Fetching data to client for processing (' + maxFeatures + ' features)...');
+
+  initialTimeSeriesData.toList(maxFeatures).evaluate(function(featureListClient, error) {
+    if (error) {
+      print('Error evaluating feature list: ' + error);
+      return;
+    }
+    if (!featureListClient || featureListClient.length === 0) {
+        print('No features returned after initial server-side processing.');
+        return;
+    }
+    print('Client-side processing ' + featureListClient.length + ' features...');
+
+    var chartableFeaturesClient = [];
+    var differencesArray = []; // For stats
+
+    for (var i = 0; i < featureListClient.length; i++) {
+      var props = featureListClient[i].properties;
+      var longVal = props.value_long_lead;   // JavaScript number or null
+      var shortVal = props.value_short_lead; // JavaScript number or null
+      var timeStart = props['system:time_start']; // JavaScript number (timestamp)
+      var diff = null;
+
+      // Client-side null check is straightforward
+      if (longVal !== null && shortVal !== null) {
+        diff = longVal - shortVal; // Client-side subtraction
+        differencesArray.push(diff); // Add to array for stats
+        chartableFeaturesClient.push(ee.Feature(null, {
+          'system:time_start': timeStart,
+          'fcst_diff_312h_minus_24h': diff
+        }));
+      }
+    }
+
+    if (chartableFeaturesClient.length === 0) {
+      print('No valid difference data to calculate stats or chart after client-side processing.');
+      return;
+    }
+
+    // Client-side Stats Calculation
+    if (differencesArray.length > 0) {
+      var sum = differencesArray.reduce(function(a, b) { return a + b; }, 0);
+      var meanDiff = sum / differencesArray.length;
+      var sqDiffs = differencesArray.map(function(value){ return Math.pow(value - meanDiff, 2); });
+      var variance = sqDiffs.reduce(function(a,b){ return a + b; }, 0) / differencesArray.length;
+      var stdDevDiff = Math.sqrt(variance);
+
+      print('--- Statistics of (312h Forecast - 24h Forecast) (Client-side) ---');
+      print('Mean Difference:', meanDiff);
+      print('Standard Deviation of Difference:', stdDevDiff);
+      print('Number of valid difference points for stats: ' + differencesArray.length);
+    } else {
+      print('--- Statistics of (312h Forecast - 24h Forecast) ---');
+      print('Mean Difference: N/A (no valid difference points)');
+      print('Standard Deviation of Difference: N/A (no valid difference points)');
+    }
+
+    // Create FeatureCollection from client-side features for charting
+    var validTimeSeriesDataClient = ee.FeatureCollection(chartableFeaturesClient);
+
+    print('Plotting ' + chartableFeaturesClient.length + ' difference points.');
+    var differenceChart = ui.Chart.feature.byFeature({
+      features: validTimeSeriesDataClient,
+      xProperty: 'system:time_start',
+      yProperties: ['fcst_diff_312h_minus_24h']
+    }).setOptions({
+      title: 'Difference: (312h Fcst - 24h Fcst) Raw Values - Germany\nTarget Validity Time: ' + FORECAST_RUN_TIME_OF_DAY_UTC.slice(1,6) + ' UTC',
+      vAxis: {title: 'Difference in Raw temperature_2m_sfc Value'},
+      hAxis: {title: 'Forecast Validity Date', format: 'YYYY-MM-dd', gridlines: {count: -1}},
+      series: { 0: {label: 'Difference (312h - 24h)', color: 'purple', lineWidth: 2, pointSize: 3}},
+      legend: {position: 'bottom'},
+      interpolateNulls: false
+    });
+    print(differenceChart);
+  });
+}
