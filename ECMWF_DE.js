@@ -426,3 +426,4 @@ if (nDays.getInfo() <= 0) {
       print('No data to chart.');
     }
   });
+  }
