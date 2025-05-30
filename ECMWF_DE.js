@@ -317,3 +317,112 @@ if (nDays.getInfo() <= 0) {
     print(differenceChart);
   });
 }
+
+// --- Configuration ---
+var START_VALIDITY_DATE_STR = '2025-01-01'; // Start of the period for which forecasts are VALID
+var END_VALIDITY_DATE_STR = '2025-01-11';   // End of the period (inclusive)
+
+// Define the three lead times we want to compare
+var LEAD_TIME_VERY_LONG_HOURS = 312; // e.g., 13 days
+var LEAD_TIME_MEDIUM_HOURS = 48;    // e.g., 2 days
+var LEAD_TIME_SHORT_HOURS = 24;     // e.g., 1 day
+
+var FORECAST_RUN_TIME_OF_DAY_UTC = 'T00:00:00Z'; // We'll assume forecasts are for 00Z on the validity day,
+                                             // so we use 00Z model runs.
+var germany = ee.FeatureCollection('WM/geoLab/geoBoundaries/600/ADM0')
+               .filter(ee.Filter.eq('shapeName', 'Germany'))
+               .first()
+               .geometry();
+
+// Helper function to get mean raw temperature for a specific creation time and forecast hour
+function getMeanRawEcmwfTemp(creationDateTimeStr, forecastHour) {
+  var creationTimeMillis = ee.Date(creationDateTimeStr).millis();
+  var forecastImageRaw = ee.ImageCollection('ECMWF/NRT_FORECAST/IFS/OPER')
+      .filter(ee.Filter.eq('creation_time', creationTimeMillis))
+      .filter(ee.Filter.eq('forecast_hours', forecastHour))
+      .select('temperature_2m_sfc')
+      .first();
+  return ee.Algorithms.If(
+      forecastImageRaw,
+      ee.Image(forecastImageRaw).reduceRegion({
+          reducer: ee.Reducer.mean(),
+          geometry: germany,
+          scale: 10000,
+          maxPixels: 1e9,
+          tileScale: 4
+      }).get('temperature_2m_sfc'),
+      null);
+}
+
+// --- Main Logic ---
+var startDate = ee.Date(START_VALIDITY_DATE_STR);
+var endDate = ee.Date(END_VALIDITY_DATE_STR);
+var nDays = endDate.difference(startDate, 'day').add(1);
+
+if (nDays.getInfo() <= 0) {
+  print('Error: END_VALIDITY_DATE_STR must be on or after START_VALIDITY_DATE_STR.');
+} else {
+  print('Processing ' + nDays.getInfo() + ' validity dates from ' + START_VALIDITY_DATE_STR + ' to ' + END_VALIDITY_DATE_STR);
+  var validityDateList = ee.List.sequence(0, nDays.subtract(1))
+    .map(function(dayOffset) {
+      return startDate.advance(dayOffset, 'day'); // These are ee.Date objects for VALIDITY
+    });
+
+  var timeSeriesData = validityDateList.map(function(validityDateEeDate) {
+    validityDateEeDate = ee.Date(validityDateEeDate);
+    var targetValidityDateTime = ee.Date(validityDateEeDate.format('YYYY-MM-dd').cat(FORECAST_RUN_TIME_OF_DAY_UTC));
+
+    // --- Very Long Lead Forecast (312h) ---
+    var creationDateTimeVeryLongLead = targetValidityDateTime.advance(-LEAD_TIME_VERY_LONG_HOURS, 'hour');
+    var creationDateTimeStrVeryLongLead = ee.String(creationDateTimeVeryLongLead.format('YYYY-MM-dd'))
+                                        .cat(FORECAST_RUN_TIME_OF_DAY_UTC);
+    var valueVeryLongLead = getMeanRawEcmwfTemp(creationDateTimeStrVeryLongLead, LEAD_TIME_VERY_LONG_HOURS);
+
+    // --- Medium Lead Forecast (e.g., 48h) ---
+    var creationDateTimeMediumLead = targetValidityDateTime.advance(-LEAD_TIME_MEDIUM_HOURS, 'hour');
+    var creationDateTimeStrMediumLead = ee.String(creationDateTimeMediumLead.format('YYYY-MM-dd'))
+                                        .cat(FORECAST_RUN_TIME_OF_DAY_UTC);
+    var valueMediumLead = getMeanRawEcmwfTemp(creationDateTimeStrMediumLead, LEAD_TIME_MEDIUM_HOURS);
+
+    // --- Short Lead Forecast (e.g., 24h) ---
+    var creationDateTimeShortLead = targetValidityDateTime.advance(-LEAD_TIME_SHORT_HOURS, 'hour');
+    var creationDateTimeStrShortLead = ee.String(creationDateTimeShortLead.format('YYYY-MM-dd'))
+                                         .cat(FORECAST_RUN_TIME_OF_DAY_UTC);
+    var valueShortLead = getMeanRawEcmwfTemp(creationDateTimeStrShortLead, LEAD_TIME_SHORT_HOURS);
+
+    return ee.Feature(null, {
+      'system:time_start': targetValidityDateTime.millis(), // X-axis is the common VALIDITY date
+      'fcst_312h_value': valueVeryLongLead,  // New property name
+      'fcst_48h_value': valueMediumLead,    // Renamed for clarity
+      'fcst_24h_value': valueShortLead     // Renamed for clarity
+    });
+  });
+
+  var validTimeSeriesData = ee.FeatureCollection(timeSeriesData);
+  // print('Time Series Data (first 2):', validTimeSeriesData.limit(2));
+
+  validTimeSeriesData.size().evaluate(function(size, error) {
+    if (error) { print('Error getting size: ' + error); }
+    else if (size > 0) {
+      print('Plotting ' + size + ' points.');
+      var comparisonChart = ui.Chart.feature.byFeature({
+        features: validTimeSeriesData,
+        xProperty: 'system:time_start',
+        yProperties: ['fcst_312h_value', 'fcst_48h_value', 'fcst_24h_value'] // Added new property
+      }).setOptions({
+        title: 'ECMWF NRT Raw Forecast Comparison - Germany\nTarget Validity Time: ' + FORECAST_RUN_TIME_OF_DAY_UTC.slice(1,6) + ' UTC',
+        vAxis: {title: 'Raw temperature_2m_sfc Value'},
+        hAxis: {title: 'Forecast Validity Date', format: 'YYYY-MM-dd', gridlines: {count: -1}},
+        series: { // Define series for each lead time
+          0: {label: LEAD_TIME_VERY_LONG_HOURS + 'h Lead Fcst', color: 'green', lineWidth: 2, pointSize: 3},
+          1: {label: LEAD_TIME_MEDIUM_HOURS + 'h Lead Fcst', color: 'blue', lineWidth: 2, pointSize: 3},
+          2: {label: LEAD_TIME_SHORT_HOURS + 'h Lead Fcst', color: 'red', lineWidth: 2, lineDashStyle: [4,4], pointSize: 3}
+        },
+        legend: {position: 'bottom'},
+        interpolateNulls: false
+      });
+      print(comparisonChart);
+    } else {
+      print('No data to chart.');
+    }
+  });
