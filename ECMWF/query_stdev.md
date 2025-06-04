@@ -661,4 +661,130 @@ plt.show()
 
     
 ![png](output_3_2.png)
-    
+
+
+ECMWF Forecast Data Processing and Error Analysis
+This set of Python scripts retrieves, processes, and visualizes ECMWF 2-meter temperature forecasts for multiple countries using Google Earth Engine (GEE), analyzes forecast errors, and compares them to a baseline "lazy" model. The scripts focus on mean temperature forecasts but can be extended to include standard deviation (ensemble spread) data as described in query_stdev.md.
+Overview
+The scripts perform the following tasks:
+Data Retrieval: Query ECMWF IFS operational forecast data (ECMWF/NRT_FORECAST/IFS/OPER) for 2-meter temperatures at 24-hour intervals (0h to 360h) over specified date ranges and geographic regions (e.g., Germany, Luxembourg, Monaco).
+
+Data Processing: Compute regional mean temperatures for each country, pivot the data into tables, and save them as TSV files.
+
+Visualization: Generate an animated GIF showing forecast evolution and a 3x3 plot grid comparing forecast errors and their standard deviations against a lazy model (persistence forecast).
+
+Error Analysis: Calculate forecast errors (ECMWF forecast minus actual 0h temperature) and lazy model errors, with standard deviations to assess forecast performance.
+
+Scripts and Functionality
+1. Single-Country Forecast Retrieval (first_script.py)
+Purpose: Retrieves 2-meter temperature forecasts for Germany over a short date range (e.g., May 31, 2025, to June 4, 2025).
+
+Workflow:
+Defines Germany’s geometry using the geoBoundaries dataset (WM/geoLab/geoBoundaries/600/ADM0).
+
+Queries GEE for ECMWF forecasts at 00:00 UTC for each creation date, selecting temperature_2m_sfc.
+
+Computes mean temperatures over Germany for 24-hour forecast steps (0h, 24h, ..., 360h).
+
+Pivots data into a table (rows: creation dates, columns: forecast hours) and saves it as a TSV file (forecast_germany_pivoted_celsius_24h_steps_0406.tsv).
+
+Output: Console table of mean temperatures (°C) and a TSV file.
+
+2. Forecast Evolution Animation (second_script.py)
+Purpose: Visualizes the evolution of temperature forecasts for Luxembourg as an animated GIF.
+
+Workflow:
+Loads the TSV file for Luxembourg (forecast_LU_pivoted_celsius_24h_steps.tsv).
+
+For each creation date, plots the forecast temperatures (cyan line) and actual 0h temperatures (black line) over target datetimes, with previous forecasts in gray.
+
+Saves the animation as ecmwf_forecast_last30days.gif using the Pillow writer.
+
+Output: A GIF showing how forecasts converge to actual temperatures over time.
+
+3. Multi-Country Forecast Retrieval (third_script.py)
+Purpose: Extends the first script to process forecasts for multiple countries (Luxembourg, Monaco) over a longer period (e.g., Jan 1, 2025, to June 2, 2025).
+
+Workflow:
+Loops through a dictionary of countries (LU: Luxembourg, MC: Monaco).
+
+For each country:
+Defines geometry using geoBoundaries.
+
+Queries ECMWF data and computes mean temperatures.
+
+Saves pivoted tables to TSV files in the country_forecast_data directory (e.g., forecast_LU_pivoted_celsius_24h_steps.tsv).
+
+Output: TSV files for each country with mean temperatures.
+
+4. Forecast Error Analysis and Visualization (fourth_script.py)
+Purpose: Analyzes forecast errors for Germany, Luxembourg, and Monaco, comparing ECMWF forecasts to a lazy model (persistence).
+
+Workflow:
+Loads TSV files for each country.
+
+Computes forecast errors: Predicted temperature (24h to 360h) minus actual 0h temperature at the target date.
+
+Computes lazy model errors: Assumes the 0h temperature persists for all forecast horizons.
+
+Trims data to the last 15 days before the latest creation date.
+
+Creates a 3x3 plot grid:
+Row 1: Time series of forecast errors (24h in black, 144h in blue, 312h in red, others in gray).
+
+Row 2: Time series of lazy model errors.
+
+Row 3: Standard deviation of errors for ECMWF (black) vs. lazy model (red) across forecast hours.
+
+Output: Three PNG plots showing error time series and standard deviations for each country.
+
+Relation to query_stdev.md
+The query_stdev.md file likely describes how to query ECMWF ensemble spread (standard deviation) data, which quantifies forecast uncertainty across ensemble members. While the provided scripts focus on mean temperatures, the fourth script computes the standard deviation of forecast errors over creation dates, indirectly assessing forecast uncertainty. To directly incorporate ensemble spread:
+Modify the data retrieval scripts to query the temperature_2m_sfc_spread band (if available in GEE) or use ECMWF’s CDS API to fetch ensemble spread data.
+
+Add standard deviation to the TSV files and visualize it (e.g., as error bars or shaded regions) in the plots.
+
+Key Features
+Data Source: ECMWF IFS operational forecasts via GEE.
+
+Countries: Germany, Luxembourg, Monaco (extensible to others).
+
+Forecast Horizons: 0h to 360h at 24-hour intervals.
+
+Error Analysis: Compares ECMWF forecasts to a lazy model, with standard deviation as a performance metric.
+
+Visualizations: Animated GIF for forecast evolution and 3x3 plot grid for error analysis.
+
+Dependencies
+Python libraries: ee (Google Earth Engine), pandas, matplotlib, matplotlib.animation.
+
+GEE account with authentication.
+
+ECMWF data access via GEE (requires ECMWF/NRT_FORECAST/IFS/OPER dataset).
+
+Outputs
+TSV Files: Pivoted tables with mean temperatures for each country (forecast_[COUNTRY]_pivoted_celsius_24h_steps.tsv).
+
+GIF: Animated visualization of forecast evolution (ecmwf_forecast_last30days.gif).
+
+PNG Plots: 3x3 grid comparing forecast and lazy model errors and their standard deviations.
+
+Usage Notes
+Adjust the scale parameter in GEE queries for small countries (e.g., Monaco) to avoid over-averaging.
+
+Extend the scripts to include ensemble spread data for direct uncertainty analysis (see query_stdev.md).
+
+Optimize GEE queries for large date ranges by caching results or using batch processing.
+
+Credits
+Data: ECMWF IFS via Google Earth Engine.
+
+Lazy Model Concept: @connolly_s
+.
+
+Analysis: GPT-4.
+
+Plotting: @orwell2022
+.
+
+
