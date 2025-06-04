@@ -755,11 +755,14 @@ Credits
 Data: ECMWF IFS via Google Earth Engine.
 
 Lazy Model Concept: @connolly_s
-.
 
-Analysis: GPT-4.
+Coder / grinder: Gemini 2.5
 
-Plotting: @orwell2022
-.
+Analysis: GPT-4
+
+MD summary: Grok 3.0
+
+PM: @orwell2022
+
 
 
