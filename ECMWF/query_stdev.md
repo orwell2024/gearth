@@ -764,5 +764,7 @@ MD summary: Grok 3.0
 
 PM: @orwell2022
 
+Funding: Oil/Gas/Tobacco/Alc dividends + US 0-3m treasuries.
+
 
 
